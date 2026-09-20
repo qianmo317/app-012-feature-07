@@ -5,6 +5,12 @@ import { judgeWeight, getWeightStatus } from '../weighing';
 import { scoreRound } from '../scoring';
 import { getRandomHerbs } from '../herbs';
 import type { HerbMeta } from '../types';
+import {
+  CabinetState, RestoreResult,
+  createCabinet, openDrawer, identifySlot, restoreSlot,
+  findSlot, isOrganized, messyCount,
+  ORGANIZE_IDENTIFY_COST, ORGANIZE_RESTORE_COST,
+} from '../cabinet';
 
 export class GameManager {
   state: GameState = {
@@ -44,13 +50,23 @@ export class GameManager {
   flashingDrawer: string | null = null;
   flashTime = 0;
 
+  // 药柜整理：仅 requireOrganize 的关卡启用；整理进度保存在这里，中断后继续
+  cabinet: CabinetState | null = null;
+  message: string | null = null;
+  messageTime = 0;
+
+  setMessage(text: string, seconds = 2.5): void {
+    this.message = text;
+    this.messageTime = seconds;
+  }
+
   startLevel(level: number, endless = false): void {
     this.endless = endless;
     this.state.level = level;
     this.state.expired = false;
     this.levelConfig = getLevelConfig(level);
-    this.prescription = generatePrescription(this.levelConfig);
     this.herbs = getRandomHerbs(this.levelConfig.herbCount + (this.levelConfig.hasSimilarHerbs ? 2 : 0), this.levelConfig.hasSimilarHerbs);
+    this.prescription = generatePrescription(this.levelConfig, this.herbs);
     this.currentWeight = 0;
     this.zeroOffset = 0;
     this.targetGrams = 0;
@@ -66,11 +82,14 @@ export class GameManager {
     this.lastTick = performance.now();
     this.drawerOpen = new Set();
     this.draggingHerb = null;
+    this.cabinet = this.levelConfig.requireOrganize ? createCabinet(this.herbs.map(h => h.name)) : null;
+    this.message = null;
+    this.messageTime = 0;
     this.phase = 'playing';
   }
 
   tick(now: number): void {
-    if (this.phase !== 'playing' && this.phase !== 'weighing') return;
+    if (this.phase !== 'playing' && this.phase !== 'weighing' && this.phase !== 'organizing') return;
     const dt = (now - this.lastTick) / 1000;
     this.lastTick = now;
     this.timeUsed += dt;
@@ -87,6 +106,11 @@ export class GameManager {
       this.flashTime -= dt;
       if (this.flashTime <= 0) this.flashingDrawer = null;
     }
+
+    if (this.messageTime > 0) {
+      this.messageTime -= dt;
+      if (this.messageTime <= 0) this.message = null;
+    }
   }
 
   selectDrawer(herb: string): boolean {
@@ -97,12 +121,91 @@ export class GameManager {
       this.flashTime = 0.5;
       return false;
     }
+
+    if (this.cabinet) {
+      // 拉开一回算一回，拉开多了药柜会变乱
+      openDrawer(this.cabinet, herb);
+      const slot = this.cabinet.slots[findSlot(this.cabinet, herb)];
+      identifySlot(this.cabinet, herb);
+      if (slot.content !== slot.label) {
+        this.setMessage(`「${herb}」里装的竟是${slot.content}！药柜乱了，按 O 整理`);
+        this.flashingDrawer = herb;
+        this.flashTime = 0.8;
+        return false;
+      }
+    }
+
     this.drawerOpen.add(herb);
     this.currentHerb = herb;
     this.targetGrams = needed.grams;
     this.currentWeight = 0;
     this.phase = 'weighing';
     return true;
+  }
+
+  // 进出整理模式。整理进度都在 this.cabinet 里，中途回去抓药再回来不丢
+  toggleOrganize(): boolean {
+    if (!this.cabinet) return false;
+    if (this.phase === 'playing') {
+      this.phase = 'organizing';
+      const messy = messyCount(this.cabinet);
+      this.setMessage(
+        messy > 0
+          ? `整理药柜：点抽屉认药，再点一次归位（有 ${messy} 格对不上）`
+          : '整理药柜：点抽屉认药，再点一次归位',
+        3.5
+      );
+      return true;
+    }
+    if (this.phase === 'organizing') {
+      this.phase = 'playing';
+      return true;
+    }
+    return false;
+  }
+
+  // 整理模式：拉开认一认这格装的是什么
+  identifyDrawer(herb: string): string | null {
+    if (this.phase !== 'organizing' || !this.cabinet) return null;
+    const content = identifySlot(this.cabinet, herb);
+    if (content === null) return null;
+    this.spendOrganizeTime(ORGANIZE_IDENTIFY_COST);
+    const slot = this.cabinet.slots[findSlot(this.cabinet, herb)];
+    this.setMessage(
+      slot.content === slot.label
+        ? `「${herb}」里正是${content}，没错`
+        : `「${herb}」里装的是${content}，对不上！`
+    );
+    return content;
+  }
+
+  // 整理模式：把认过的格子归位；本来就是对的算白做，照样花时间
+  restoreDrawer(herb: string): RestoreResult | null {
+    if (this.phase !== 'organizing' || !this.cabinet) return null;
+    const idx = findSlot(this.cabinet, herb);
+    if (idx < 0) return null;
+    if (!this.cabinet.slots[idx].identified) {
+      this.setMessage('还没拉开认过这格，先认一认再归位');
+      return { ok: false, wasted: false, swapped: false };
+    }
+    const result = restoreSlot(this.cabinet, herb);
+    this.spendOrganizeTime(ORGANIZE_RESTORE_COST);
+    if (result.wasted) {
+      this.setMessage(`「${herb}」本来就是对的，白忙一场`);
+    } else if (result.swapped) {
+      this.setMessage(
+        isOrganized(this.cabinet)
+          ? `「${herb}」归位！药柜全整理好了`
+          : `「${herb}」归位了`
+      );
+    }
+    return result;
+  }
+
+  private spendOrganizeTime(seconds: number): void {
+    if (this.timeLeft !== null) {
+      this.timeLeft = Math.max(0, this.timeLeft - seconds);
+    }
   }
 
   setWeight(w: number): void {

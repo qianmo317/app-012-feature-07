@@ -1,10 +1,13 @@
-import type { Prescription, PrescriptionItem, LevelConfig } from './types';
+import type { Prescription, PrescriptionItem, LevelConfig, HerbMeta } from './types';
 import { getRandomHerbs } from './herbs';
 
 let prescriptionIdCounter = 0;
 
-export function generatePrescription(config: LevelConfig): Prescription {
-  const herbs = getRandomHerbs(config.herbCount, config.hasSimilarHerbs);
+export function generatePrescription(config: LevelConfig, pool?: HerbMeta[]): Prescription {
+  // 传入药柜药材池时，处方一定从池里出，保证每味药都有对应抽屉
+  const herbs = pool && pool.length >= config.herbCount
+    ? [...pool].sort(() => Math.random() - 0.5).slice(0, config.herbCount)
+    : getRandomHerbs(config.herbCount, config.hasSimilarHerbs);
   const items: PrescriptionItem[] = herbs.map(herb => {
     const grams = Math.floor(Math.random() * 20) + 5;
     let decoct: 'normal' | 'first' | 'last' = 'normal';

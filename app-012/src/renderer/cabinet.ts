@@ -1,4 +1,6 @@
 import type { HerbMeta } from '../types';
+import type { CabinetState } from '../cabinet';
+import { findSlot, MESS_OPEN_THRESHOLD } from '../cabinet';
 
 export interface DrawerRect {
   x: number;
@@ -66,13 +68,22 @@ export class CabinetRenderer {
     if (d) d.open = 0;
   }
 
-  draw(ctx: CanvasRenderingContext2D): void {
+  draw(ctx: CanvasRenderingContext2D, cabinet: CabinetState | null = null, organizeMode = false): void {
     for (const d of this.drawers) {
-      this.drawDrawer(ctx, d);
+      const idx = cabinet && d.herb ? findSlot(cabinet, d.herb) : -1;
+      const slot = idx >= 0 && cabinet ? cabinet.slots[idx] : null;
+      const openCount = idx >= 0 && cabinet ? cabinet.openCounts[idx] : 0;
+      this.drawDrawer(ctx, d, slot, openCount, organizeMode);
     }
   }
 
-  private drawDrawer(ctx: CanvasRenderingContext2D, d: DrawerRect): void {
+  private drawDrawer(
+    ctx: CanvasRenderingContext2D,
+    d: DrawerRect,
+    slot: { label: string; content: string; identified: boolean } | null,
+    openCount: number,
+    organizeMode: boolean,
+  ): void {
     const depth = d.open * 8;
     const bg = d.hovered ? '#8b6914' : '#6b4e23';
 
@@ -91,7 +102,37 @@ export class CabinetRenderer {
       ctx.font = '14px "Microsoft YaHei", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(d.herb, d.x + d.w / 2 + depth, d.y + d.h / 2 + depth);
+      const labelY = organizeMode && slot ? d.y + d.h / 2 - 8 + depth : d.y + d.h / 2 + depth;
+      ctx.fillText(d.herb, d.x + d.w / 2 + depth, labelY);
+    }
+
+    // 整理模式：认过的格子亮出实际内容，对不上的标红
+    if (organizeMode && slot) {
+      ctx.font = '11px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const subY = d.y + d.h - 12 + depth;
+      if (!slot.identified) {
+        ctx.fillStyle = '#b0a090';
+        ctx.fillText('？', d.x + d.w / 2 + depth, subY);
+      } else if (slot.content === slot.label) {
+        ctx.fillStyle = '#90ee90';
+        ctx.fillText(`✓ ${slot.content}`, d.x + d.w / 2 + depth, subY);
+      } else {
+        ctx.fillStyle = '#ff6b6b';
+        ctx.fillText(`✗ 装的是${slot.content}`, d.x + d.w / 2 + depth, subY);
+      }
+    }
+
+    // 拉开次数多了的抽屉画磨损点，提示这格可能乱了
+    if (openCount >= MESS_OPEN_THRESHOLD) {
+      const dots = Math.min(3, openCount - MESS_OPEN_THRESHOLD + 1);
+      ctx.fillStyle = '#d4a574';
+      for (let i = 0; i < dots; i++) {
+        ctx.beginPath();
+        ctx.arc(d.x + d.w - 8 - i * 7 + depth, d.y + 7 + depth, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     if (d.open > 0.5) {

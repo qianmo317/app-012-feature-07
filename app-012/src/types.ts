@@ -47,7 +47,7 @@ export interface ScoreBreakdown {
   total: number;
 }
 
-export type GamePhase = 'menu' | 'playing' | 'weighing' | 'review' | 'result' | 'gameover';
+export type GamePhase = 'menu' | 'playing' | 'weighing' | 'organizing' | 'review' | 'result' | 'gameover';
 
 export interface HerbMeta {
   name: string;

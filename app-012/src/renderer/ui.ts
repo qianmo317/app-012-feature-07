@@ -5,6 +5,7 @@ export class UIRenderer {
   prescriptionY: number = 60;
   prescriptionW: number = 260;
   buttonRects: Array<{ x: number; y: number; w: number; h: number; action: string }> = [];
+  organizeBtnRect: { x: number; y: number; w: number; h: number } | null = null;
 
   layout(canvasW: number, _canvasH: number): void {
     this.prescriptionX = 20;
@@ -329,5 +330,51 @@ export class UIRenderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('归零', x + 30, y + 16);
+  }
+
+  // 整理药柜入口按钮；active 表示正在整理，messy 是对不上的格数
+  drawOrganizeButton(ctx: CanvasRenderingContext2D, active: boolean, messy: number): void {
+    const x = 610;
+    const y = 8;
+    const w = 150;
+    const h = 32;
+    this.organizeBtnRect = { x, y, w, h };
+
+    ctx.fillStyle = active ? '#d4a574' : '#6b4e23';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#d4a574';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+
+    ctx.fillStyle = active ? '#3e2b1f' : '#f5e6d3';
+    ctx.font = '14px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(active ? '继续抓药 (O)' : '整理药柜 (O)', x + w / 2, y + h / 2);
+
+    if (!active && messy > 0) {
+      ctx.fillStyle = '#dc143c';
+      ctx.beginPath();
+      ctx.arc(x + w - 6, y + 2, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.fillText(`${messy}`, x + w - 6, y + 2);
+    }
+  }
+
+  drawMessage(ctx: CanvasRenderingContext2D, canvasW: number, message: string): void {
+    const w = Math.min(canvasW - 40, 620);
+    const x = (canvasW - w) / 2;
+    const y = 56;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.fillRect(x, y, w, 34);
+
+    ctx.fillStyle = '#ffe9b0';
+    ctx.font = '15px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(message, canvasW / 2, y + 17);
   }
 }

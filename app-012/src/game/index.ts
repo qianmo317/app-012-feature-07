@@ -4,6 +4,7 @@ import { ScaleRenderer } from '../renderer/scale';
 import { UIRenderer } from '../renderer/ui';
 import { GameManager } from './state';
 import { getHerbByName } from '../herbs';
+import { findSlot, messyCount } from '../cabinet';
 import { resumeAudio, playDrawerSound, playDropSound, playPointerSound, playErrorSound, playSuccessSound } from '../audio/synth';
 
 export class ApothecaryGame {
@@ -60,7 +61,7 @@ export class ApothecaryGame {
     ctx.fillStyle = '#2d2418';
     ctx.fillRect(0, 0, w, h);
 
-    this.cabinet.draw(ctx);
+    this.cabinet.draw(ctx, this.game.cabinet, this.game.phase === 'organizing');
     this.scale.draw(ctx, this.game.currentWeight, this.game.zeroOffset);
 
     if (this.game.prescription) {
@@ -73,6 +74,14 @@ export class ApothecaryGame {
 
     if (this.game.levelConfig.requireTare) {
       this.ui.drawTareButton(ctx, this.scale.x + this.scale.w - 60, this.scale.y + this.scale.h + 10, false);
+    }
+
+    if (this.game.cabinet && (this.game.phase === 'playing' || this.game.phase === 'organizing')) {
+      this.ui.drawOrganizeButton(ctx, this.game.phase === 'organizing', messyCount(this.game.cabinet));
+    }
+
+    if (this.game.message) {
+      this.ui.drawMessage(ctx, w, this.game.message);
     }
 
     if (this.game.currentHerb) {
@@ -229,6 +238,31 @@ export class ApothecaryGame {
       return;
     }
 
+    if (this.game.phase === 'playing' || this.game.phase === 'organizing') {
+      const btn = this.ui.organizeBtnRect;
+      if (this.game.cabinet && btn && x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
+        if (this.game.toggleOrganize()) playDrawerSound();
+        return;
+      }
+    }
+
+    if (this.game.phase === 'organizing') {
+      const drawer = this.cabinet.getDrawerAt(x, y);
+      if (drawer && drawer.herb && this.game.cabinet) {
+        const idx = findSlot(this.game.cabinet, drawer.herb);
+        const identified = idx >= 0 && this.game.cabinet.slots[idx].identified;
+        if (identified) {
+          const res = this.game.restoreDrawer(drawer.herb);
+          if (res && res.swapped) playSuccessSound();
+          else playPointerSound();
+        } else {
+          this.game.identifyDrawer(drawer.herb);
+          playDrawerSound();
+        }
+      }
+      return;
+    }
+
     if (this.game.phase === 'playing') {
       const drawer = this.cabinet.getDrawerAt(x, y);
       if (drawer && drawer.herb) {
@@ -294,6 +328,18 @@ export class ApothecaryGame {
       if (key === 'Enter' || key === ' ') {
         this.game.startLevel(1, false);
         this.cabinet.setHerbs(this.game.herbs);
+      }
+      return;
+    }
+
+    if ((this.game.phase === 'playing' || this.game.phase === 'organizing') && (key === 'o' || key === 'O')) {
+      if (this.game.toggleOrganize()) playDrawerSound();
+      return;
+    }
+
+    if (this.game.phase === 'organizing') {
+      if (key === 'Escape') {
+        this.game.toggleOrganize();
       }
       return;
     }
