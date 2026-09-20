@@ -2,7 +2,7 @@ import { GameCanvas } from '../renderer/canvas';
 import { CabinetRenderer } from '../renderer/cabinet';
 import { ScaleRenderer } from '../renderer/scale';
 import { UIRenderer } from '../renderer/ui';
-import { GameManager } from './state';
+import { GameManager, type OrganizeAction } from './state';
 import { getHerbByName } from '../herbs';
 import { resumeAudio, playDrawerSound, playDropSound, playPointerSound, playErrorSound, playSuccessSound } from '../audio/synth';
 
@@ -60,7 +60,7 @@ export class ApothecaryGame {
     ctx.fillStyle = '#2d2418';
     ctx.fillRect(0, 0, w, h);
 
-    this.cabinet.draw(ctx);
+    this.cabinet.draw(ctx, this.game.cells, this.game.openDrawerIndex, this.game.flashIndex, this.game.organizeSource);
     this.scale.draw(ctx, this.game.currentWeight, this.game.zeroOffset);
 
     if (this.game.prescription) {
@@ -69,7 +69,15 @@ export class ApothecaryGame {
 
     this.ui.drawStatus(ctx, this.game.state.level, this.game.state.score, this.game.state.combo, this.game.state.queue, this.game.state.satisfaction, this.game.getTimeLeft());
     this.ui.drawPackageArea(ctx, w, h, this.game.packages);
-    this.ui.drawInstructions(ctx, w, h);
+    this.ui.drawInstructions(ctx, w, h, this.game.phase, this.game.levelConfig.requireOrganize);
+
+    if (this.game.levelConfig.requireOrganize) {
+      this.cabinet.drawPanel(ctx, w, this.game.phase === 'organize' ? 'organize' : 'playing', this.game.getOrganizeProgress());
+    }
+
+    if (this.game.message) {
+      this.cabinet.drawMessage(ctx, w, this.game.message);
+    }
 
     if (this.game.levelConfig.requireTare) {
       this.ui.drawTareButton(ctx, this.scale.x + this.scale.w - 60, this.scale.y + this.scale.h + 10, false);
@@ -88,14 +96,6 @@ export class ApothecaryGame {
         ctx.globalAlpha = 0.8;
         this.drawHerbPile(ctx, this.mouseX - 20, this.mouseY - 20, herbMeta.color, 30);
         ctx.globalAlpha = 1;
-      }
-    }
-
-    if (this.game.flashingDrawer) {
-      const drawer = this.cabinet.drawers.find(d => d.herb === this.game.flashingDrawer);
-      if (drawer) {
-        ctx.fillStyle = `rgba(255, 0, 0, ${0.3 + Math.sin(performance.now() / 50) * 0.2})`;
-        ctx.fillRect(drawer.x, drawer.y, drawer.w, drawer.h);
       }
     }
 
@@ -193,10 +193,8 @@ export class ApothecaryGame {
       if (btn) {
         if (btn.action === 'start') {
           this.game.startLevel(1, false);
-          this.cabinet.setHerbs(this.game.herbs);
         } else if (btn.action === 'endless') {
           this.game.startLevel(1, true);
-          this.cabinet.setHerbs(this.game.herbs);
         }
       }
       return;
@@ -218,10 +216,8 @@ export class ApothecaryGame {
       if (btn) {
         if (btn.action === 'next') {
           this.game.nextLevel();
-          this.cabinet.setHerbs(this.game.herbs);
         } else if (btn.action === 'retry') {
           this.game.retryLevel();
-          this.cabinet.setHerbs(this.game.herbs);
         } else if (btn.action === 'menu') {
           this.game.phase = 'menu';
         }
@@ -229,15 +225,27 @@ export class ApothecaryGame {
       return;
     }
 
-    if (this.game.phase === 'playing') {
-      const drawer = this.cabinet.getDrawerAt(x, y);
-      if (drawer && drawer.herb) {
-        const ok = this.game.selectDrawer(drawer.herb);
-        if (ok) {
-          playDrawerSound();
-          this.cabinet.openDrawer(drawer.herb);
+    if (this.game.phase === 'playing' || this.game.phase === 'organize') {
+      const panelBtn = this.cabinet.getButtonAt(x, y);
+      if (panelBtn) {
+        if (panelBtn.action === 'organize') {
+          this.game.enterOrganize();
+          playPointerSound();
+        } else if (panelBtn.action === 'exit-organize') {
+          this.game.exitOrganize();
+          playPointerSound();
+        }
+        return;
+      }
+
+      const drawer = this.cabinet.getDrawerAt(x, y, this.game.cells.length);
+      if (drawer) {
+        if (this.game.phase === 'organize') {
+          this.handleOrganizeAction(this.game.organizeClick(drawer.index));
         } else {
-          playErrorSound();
+          const result = this.game.selectDrawer(drawer.index);
+          if (result.ok) playDrawerSound();
+          else if (result.pull === 'scrambled') playErrorSound();
         }
       }
       return;
@@ -270,6 +278,23 @@ export class ApothecaryGame {
     }
   }
 
+  private handleOrganizeAction(action: OrganizeAction): void {
+    switch (action) {
+      case 'restored':
+      case 'done':
+        playSuccessSound();
+        break;
+      case 'scrambled':
+      case 'already-home':
+      case 'wrong-target':
+      case 'not-inspected':
+        playErrorSound();
+        break;
+      default:
+        playDrawerSound();
+    }
+  }
+
   handlePointerMove(x: number, y: number): void {
     this.cabinet.updateHover(x, y);
     if (this.game.phase === 'weighing' && this.game.draggingHerb) {
@@ -293,23 +318,31 @@ export class ApothecaryGame {
     if (this.game.phase === 'menu') {
       if (key === 'Enter' || key === ' ') {
         this.game.startLevel(1, false);
-        this.cabinet.setHerbs(this.game.herbs);
+      }
+      return;
+    }
+
+    if (this.game.phase === 'organize') {
+      if (key === 'Escape' || key === 'o' || key === 'O') {
+        this.game.exitOrganize();
+        playPointerSound();
       }
       return;
     }
 
     if (this.game.phase === 'playing') {
+      if ((key === 'o' || key === 'O') && this.game.levelConfig.requireOrganize) {
+        this.game.enterOrganize();
+        playPointerSound();
+        return;
+      }
       const idx = parseInt(key);
       if (!isNaN(idx) && idx >= 1 && idx <= 9) {
-        const drawers = this.cabinet.drawers.filter(d => d.herb);
+        const drawers = this.cabinet.drawers.filter(d => d.index < this.game.cells.length);
         if (idx <= drawers.length) {
-          const ok = this.game.selectDrawer(drawers[idx - 1].herb);
-          if (ok) {
-            playDrawerSound();
-            this.cabinet.openDrawer(drawers[idx - 1].herb);
-          } else {
-            playErrorSound();
-          }
+          const result = this.game.selectDrawer(drawers[idx - 1].index);
+          if (result.ok) playDrawerSound();
+          else if (result.pull === 'scrambled') playErrorSound();
         }
       }
       return;
@@ -346,7 +379,6 @@ export class ApothecaryGame {
         } else {
           this.game.retryLevel();
         }
-        this.cabinet.setHerbs(this.game.herbs);
       }
       return;
     }

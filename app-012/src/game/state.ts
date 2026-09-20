@@ -1,10 +1,22 @@
-import type { GameState, GamePhase, Prescription, WeighResult, LevelConfig } from '../types';
+import type { GameState, GamePhase, Prescription, WeighResult, LevelConfig, CabinetCell, PullResult, RestoreResult } from '../types';
 import { getLevelConfig } from '../levels';
 import { generatePrescription, generateReviewQuestion } from '../prescription';
 import { judgeWeight, getWeightStatus } from '../weighing';
 import { scoreRound } from '../scoring';
 import { getRandomHerbs } from '../herbs';
+import { createCabinet, pullDrawer, restoreDrawer, misplacedCount } from '../cabinet';
 import type { HerbMeta } from '../types';
+
+export type OrganizeAction =
+  | 'pull'
+  | 'scrambled'
+  | 'picked'
+  | 'cancel'
+  | 'restored'
+  | 'done'
+  | 'already-home'
+  | 'wrong-target'
+  | 'not-inspected';
 
 export class GameManager {
   state: GameState = {
@@ -20,6 +32,7 @@ export class GameManager {
   endless = false;
   prescription: Prescription | null = null;
   herbs: HerbMeta[] = [];
+  cells: CabinetCell[] = [];
   currentWeight = 0;
   zeroOffset = 0;
   targetGrams = 0;
@@ -36,13 +49,16 @@ export class GameManager {
   timeUsed = 0;
   lastTick = 0;
 
-  drawerOpen = new Set<string>();
+  openDrawerIndex: number | null = null;
+  organizeSource: number | null = null;
   draggingHerb: string | null = null;
   dragX = 0;
   dragY = 0;
   onScale = false;
-  flashingDrawer: string | null = null;
+  flashIndex: number | null = null;
   flashTime = 0;
+  message: string | null = null;
+  messageTime = 0;
 
   startLevel(level: number, endless = false): void {
     this.endless = endless;
@@ -51,6 +67,7 @@ export class GameManager {
     this.levelConfig = getLevelConfig(level);
     this.prescription = generatePrescription(this.levelConfig);
     this.herbs = getRandomHerbs(this.levelConfig.herbCount + (this.levelConfig.hasSimilarHerbs ? 2 : 0), this.levelConfig.hasSimilarHerbs);
+    this.cells = createCabinet(this.herbs.map(h => h.name));
     this.currentWeight = 0;
     this.zeroOffset = 0;
     this.targetGrams = 0;
@@ -64,13 +81,18 @@ export class GameManager {
     this.timeLeft = this.levelConfig.timeLimit;
     this.timeUsed = 0;
     this.lastTick = performance.now();
-    this.drawerOpen = new Set();
+    this.openDrawerIndex = null;
+    this.organizeSource = null;
     this.draggingHerb = null;
+    this.flashIndex = null;
+    this.flashTime = 0;
+    this.message = null;
+    this.messageTime = 0;
     this.phase = 'playing';
   }
 
   tick(now: number): void {
-    if (this.phase !== 'playing' && this.phase !== 'weighing') return;
+    if (this.phase !== 'playing' && this.phase !== 'weighing' && this.phase !== 'organize') return;
     const dt = (now - this.lastTick) / 1000;
     this.lastTick = now;
     this.timeUsed += dt;
@@ -85,24 +107,108 @@ export class GameManager {
 
     if (this.flashTime > 0) {
       this.flashTime -= dt;
-      if (this.flashTime <= 0) this.flashingDrawer = null;
+      if (this.flashTime <= 0) this.flashIndex = null;
+    }
+    if (this.messageTime > 0) {
+      this.messageTime -= dt;
+      if (this.messageTime <= 0) this.message = null;
     }
   }
 
-  selectDrawer(herb: string): boolean {
-    if (!this.prescription) return false;
-    const needed = this.prescription.items.find(i => i.herb === herb && !this.weighed.has(i.herb));
+  private notify(text: string, seconds = 2): void {
+    this.message = text;
+    this.messageTime = seconds;
+  }
+
+  /** 抓药阶段拉开一格：累计翻找可能把药翻乱，拉错（里面不是处方上要的药）红闪 */
+  selectDrawer(index: number): { pull: PullResult; ok: boolean } {
+    if (!this.prescription) return { pull: 'disabled', ok: false };
+    const pull = pullDrawer(this.cells, index, this.levelConfig.requireOrganize);
+    this.openDrawerIndex = index;
+    const content = this.cells[index].content;
+    const needed = this.prescription.items.find(i => i.herb === content && !this.weighed.has(i.herb));
     if (!needed) {
-      this.flashingDrawer = herb;
+      this.flashIndex = index;
       this.flashTime = 0.5;
-      return false;
+      if (pull === 'scrambled') this.notify('翻找时药被弄乱了，拉开几格认一认吧');
+      return { pull, ok: false };
     }
-    this.drawerOpen.add(herb);
-    this.currentHerb = herb;
+    this.currentHerb = content;
     this.targetGrams = needed.grams;
     this.currentWeight = 0;
     this.phase = 'weighing';
-    return true;
+    return { pull, ok: true };
+  }
+
+  enterOrganize(): void {
+    if (this.phase !== 'playing' || !this.levelConfig.requireOrganize) return;
+    this.phase = 'organize';
+    this.organizeSource = null;
+  }
+
+  exitOrganize(): void {
+    if (this.phase !== 'organize') return;
+    this.phase = 'playing';
+    this.openDrawerIndex = null;
+    this.organizeSource = null;
+  }
+
+  /**
+   * 整理阶段点一格：
+   * 没有选中来源时——拉开认药（仍可能翻乱），药在位就只是确认，错位则选中待归位；
+   * 已有来源时——再点来源格取消，点其它格尝试归位。
+   */
+  organizeClick(index: number): OrganizeAction {
+    if (this.phase !== 'organize') return 'cancel';
+
+    if (this.organizeSource === null) {
+      const wasInspected = this.cells[index].inspected;
+      const pull = pullDrawer(this.cells, index, true);
+      this.openDrawerIndex = index;
+      const cell = this.cells[index];
+      if (cell.label === cell.content) {
+        if (pull === 'scrambled') {
+          this.notify('翻得太勤又乱了一格，得重新认');
+          return 'scrambled';
+        }
+        // 之前已经认过/归位过，再想动它就是白做一趟
+        if (wasInspected) {
+          this.notify('这格本来就是对的，白做一趟');
+          return 'already-home';
+        }
+        this.notify(`这格是${cell.label}，没放错`);
+        return 'pull';
+      }
+      this.organizeSource = index;
+      if (pull === 'scrambled') this.notify('翻找时又弄乱了；先把手里的药归位');
+      return pull === 'scrambled' ? 'scrambled' : 'picked';
+    }
+
+    if (index === this.organizeSource) {
+      this.organizeSource = null;
+      return 'cancel';
+    }
+
+    const result: RestoreResult = restoreDrawer(this.cells, this.organizeSource, index);
+    if (result === 'restored') {
+      this.organizeSource = null;
+      this.openDrawerIndex = index;
+      if (misplacedCount(this.cells) === 0) {
+        this.notify('全部归位，药柜整齐了');
+        return 'done';
+      }
+      this.notify('归位一味');
+      return 'restored';
+    }
+    if (result === 'already-home') this.notify('这格本来就是对的，白做一趟');
+    else if (result === 'wrong-target') this.notify(`这格写的是${this.cells[index].label}，药名对不上`);
+    else this.notify('还没拉开认过，不知道里面是什么');
+    return result;
+  }
+
+  getOrganizeProgress(): { done: number; total: number } {
+    const total = this.cells.length;
+    return { done: total - misplacedCount(this.cells), total };
   }
 
   setWeight(w: number): void {
@@ -139,10 +245,10 @@ export class GameManager {
       }
     }
 
-    this.drawerOpen.delete(this.currentHerb);
     this.currentHerb = null;
     this.currentWeight = 0;
     this.zeroOffset = 0;
+    this.openDrawerIndex = null;
 
     if (this.weighed.size >= this.prescription.items.length) {
       this.startReview();
@@ -213,9 +319,5 @@ export class GameManager {
 
   getTimeLeft(): number | null {
     return this.timeLeft;
-  }
-
-  isDrawerOpen(herb: string): boolean {
-    return this.drawerOpen.has(herb);
   }
 }

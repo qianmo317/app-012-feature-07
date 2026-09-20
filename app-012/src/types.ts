@@ -47,7 +47,18 @@ export interface ScoreBreakdown {
   total: number;
 }
 
-export type GamePhase = 'menu' | 'playing' | 'weighing' | 'review' | 'result' | 'gameover';
+export type GamePhase = 'menu' | 'playing' | 'weighing' | 'review' | 'result' | 'gameover' | 'organize';
+
+export interface CabinetCell {
+  label: string;
+  content: string;
+  pulls: number;
+  inspected: boolean;
+}
+
+export type PullResult = 'normal' | 'scrambled' | 'disabled';
+
+export type RestoreResult = 'restored' | 'already-home' | 'wrong-target' | 'not-inspected';
 
 export interface HerbMeta {
   name: string;

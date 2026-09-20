@@ -1,4 +1,4 @@
-import type { Prescription, WeighResult } from '../types';
+import type { GamePhase, Prescription, WeighResult } from '../types';
 
 export class UIRenderer {
   prescriptionX: number = 20;
@@ -304,7 +304,7 @@ export class UIRenderer {
     this.buttonRects.push({ x: bx, y: by, w: bw, h: bh, action: 'menu' });
   }
 
-  drawInstructions(ctx: CanvasRenderingContext2D, _canvasW: number, canvasH: number): void {
+  drawInstructions(ctx: CanvasRenderingContext2D, _canvasW: number, canvasH: number, phase: GamePhase = 'playing', requireOrganize = false): void {
     const x = 20;
     const y = canvasH - 80;
     ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
@@ -313,9 +313,19 @@ export class UIRenderer {
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
+    if (phase === 'organize') {
+      ctx.fillText('整理: 点抽屉拉开认药，再点药名对应的格子归位 / 再点一次取消', x + 10, y + 10);
+      ctx.fillText('反复翻找同一格可能把药弄乱；认过的格子有绿点', x + 10, y + 30);
+      ctx.fillText('计时继续，门外还排着病人；Esc 或 O 先回去抓药，进度保留', x + 10, y + 48);
+      return;
+    }
     ctx.fillText('操作: 1-9选抽屉 / 拖拽药材到秤盘 / 滚轮微调 / 空格确认 / Z归零', x + 10, y + 10);
     ctx.fillText('目标: 按处方抓药，误差在允许范围内', x + 10, y + 30);
-    ctx.fillText('注意: 先煎/后下药要单独分包', x + 10, y + 48);
+    if (requireOrganize) {
+      ctx.fillText('抽屉被反复翻找会乱: 拉开认药，点「整理药柜」(O) 归位', x + 10, y + 48);
+    } else {
+      ctx.fillText('注意: 先煎/后下药要单独分包', x + 10, y + 48);
+    }
   }
 
   drawTareButton(ctx: CanvasRenderingContext2D, x: number, y: number, active: boolean): void {
